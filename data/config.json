@@ -1,0 +1,22 @@
+{
+  "blog_id": "biopharmblog",
+  "analysis": {
+    "min_ratio_threshold": 0.2,
+    "min_consecutive_days_for_urgent": 5,
+    "min_consecutive_days_for_consider": 3,
+    "levenshtein_threshold": 2,
+    "keyword_match_min_words": 2
+  },
+  "search_sources": [
+    "네이버 통합검색_모바일",
+    "네이버 통합검색_PC",
+    "네이버 블로그검색_모바일",
+    "네이버 블로그검색_PC",
+    "네이버 웹문서검색_모바일",
+    "네이버 웹문서검색_PC"
+  ],
+  "exclude_patterns": [
+    "^https?://",
+    "^기타$"
+  ]
+}
