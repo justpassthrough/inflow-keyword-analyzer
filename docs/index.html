@@ -464,11 +464,15 @@ function extractCoreWords(text) {
 }
 
 function matchKeywordToPosts(keyword, posts) {
-  if (!posts || !posts.posts || posts.posts.length === 0) return { status: 'no_data', post: null };
+  if (!posts || !posts.posts || posts.posts.length === 0) {
+    console.warn('matchKeywordToPosts: no posts data for', keyword);
+    return { status: 'no_data', post: null };
+  }
   const kwWords = extractCoreWords(keyword);
   if (kwWords.length === 0) return { status: 'gap', post: null };
 
   let bestMatch = { status: 'gap', post: null, score: 0 };
+  const debugKw = keyword.includes('품절') || keyword.includes('마운자로');
 
   for (const post of posts.posts) {
     const titleWords = extractCoreWords(post.title);
@@ -477,6 +481,11 @@ function matchKeywordToPosts(keyword, posts) {
 
     const titleMatches = kwWords.filter(w => titleWords.some(tw => tw.includes(w) || w.includes(tw))).length;
     const titleRatio = titleMatches / kwWords.length;
+
+    if (debugKw && post.title.includes('품절')) {
+      console.log('DEBUG match:', JSON.stringify({keyword, kwWords, postTitle: post.title, titleWords, titleMatches, titleRatio}));
+    }
+
     if (titleRatio >= 0.6) {
       if (titleRatio > bestMatch.score) bestMatch = { status: 'covered', post: post.title, score: titleRatio };
       continue;
