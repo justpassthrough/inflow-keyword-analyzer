@@ -57,6 +57,11 @@ header .meta { font-size: 0.85rem; opacity: 0.85; }
 .kw-dates { font-size: 0.78rem; color: #888; margin-top: 4px; display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
 .date-chip { background: #e8f0fe; color: #1a73e8; padding: 1px 6px; border-radius: 4px; font-size: 0.72rem; cursor: default; }
 .date-fresh { margin-left: 4px; color: #e65100; font-weight: 600; }
+.kw-actions { margin-top: 6px; }
+.btn-map { font-size: 0.72rem; padding: 3px 10px; border: 1px solid #1a73e8; color: #1a73e8; background: #fff; border-radius: 6px; cursor: pointer; }
+.btn-map:hover { background: #e8f0fe; }
+.btn-unmap { font-size: 0.72rem; padding: 3px 10px; border: 1px solid #d32f2f; color: #d32f2f; background: #fff; border-radius: 6px; cursor: pointer; }
+.btn-unmap:hover { background: #ffebee; }
 
 .status-msg { text-align: center; padding: 20px; color: #999; font-size: 0.9rem; }
 .toast { position: fixed; bottom: 20px; right: 20px; background: #333; color: #fff; padding: 12px 20px; border-radius: 8px; font-size: 0.85rem; opacity: 0; transition: opacity 0.3s; z-index: 1000; }
@@ -75,9 +80,21 @@ header .meta { font-size: 0.85rem; opacity: 0.85; }
 footer { text-align: center; padding: 16px; font-size: 0.75rem; color: #aaa; }
 
 @media (max-width: 600px) {
-  header { flex-direction: column; align-items: flex-start; }
-  .summary-item { min-width: 80px; }
-  .trend-bar-label { min-width: 100px; }
+  .container { padding: 8px; }
+  header { flex-direction: column; align-items: flex-start; padding: 14px; }
+  header h1 { font-size: 1.1rem; }
+  .toolbar { gap: 4px; }
+  .toolbar button { padding: 6px 10px; font-size: 0.78rem; }
+  .summary-bar { gap: 6px; }
+  .summary-item { min-width: 70px; padding: 10px 6px; }
+  .summary-item .num { font-size: 1.2rem; }
+  .summary-item .label { font-size: 0.7rem; }
+  .section { padding: 12px; }
+  .kw-card .kw-name { font-size: 0.88rem; }
+  .kw-card .kw-detail { font-size: 0.78rem; }
+  .trend-bar-label { min-width: 100px; font-size: 0.75rem; }
+  .drop-zone { padding: 20px; }
+  .pat-modal-content { padding: 16px; }
 }
 </style>
 </head>
@@ -135,6 +152,22 @@ footer { text-align: center; padding: 16px; font-size: 0.75rem; color: #aaa; }
   </div>
 </div>
 
+<div class="pat-modal" id="mapModal">
+  <div class="pat-modal-content">
+    <h3>수동 글 연결</h3>
+    <p style="font-size:0.82rem; color:#666; margin-bottom:8px;">키워드: <strong id="mapKeyword"></strong></p>
+    <p style="font-size:0.78rem; color:#999; margin-bottom:12px;">아래에서 글을 선택하거나 제목을 직접 입력하세요.</p>
+    <select id="mapSelect" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:8px; margin-bottom:8px; font-size:0.85rem;">
+      <option value="">-- 글 선택 --</option>
+    </select>
+    <input type="text" id="mapCustom" placeholder="또는 글 제목 직접 입력" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:8px; margin-bottom:12px; font-size:0.9rem;">
+    <div class="btn-row">
+      <button class="btn-cancel" onclick="closeMapModal()">취소</button>
+      <button class="btn-save" onclick="saveMapping()">연결</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 <footer>유입 키워드 분석기 v1.0 · GitHub Pages</footer>
 
@@ -157,9 +190,11 @@ const PARTICLES = ['은','는','이','가','을','를','의','에','에서','으
 let inflowHistory = {};
 let myPosts = null;
 let historySha = null;
+let manualMappings = {}; // { "키워드": "글 제목" } — 수동 매핑
 
 // ===== INIT =====
 document.addEventListener('DOMContentLoaded', async () => {
+  manualMappings = JSON.parse(localStorage.getItem('manual_mappings') || '{}');
   setupDropZone();
   await loadFromGitHub();
   renderAll();
@@ -516,6 +551,8 @@ function getVocab(posts) {
 }
 
 function matchKeywordToPosts(keyword, posts) {
+  // 수동 매핑 우선
+  if (manualMappings[keyword]) return { status: 'covered', post: manualMappings[keyword], score: 2, manual: true };
   if (!posts || !posts.posts || posts.posts.length === 0) return { status: 'no_data', post: null };
   let kwWords = extractCoreWords(keyword);
 
@@ -578,6 +615,7 @@ function analyze() {
       avgRatio,
       matchStatus: match.status,
       matchPost: match.post,
+      manualMatch: !!match.manual,
       gapMultiplier: gapMult,
       score
     });
@@ -671,7 +709,10 @@ function renderCard(item) {
   h += '<span class="kw-score">점수: ' + item.score.toFixed(1) + '</span>';
   h += '</div>';
   h += '<div class="kw-detail">📊 ' + item.consecutive + '일 연속 | 평균 ' + item.avgRatio.toFixed(2) + '%';
-  if (item.matchStatus === 'covered') h += ' | 📝 커버 글: ' + escHtml(item.matchPost || '');
+  if (item.matchStatus === 'covered') {
+    h += ' | 📝 커버 글: ' + escHtml(item.matchPost || '');
+    if (item.manualMatch) h += ' (수동)';
+  }
   else if (item.matchStatus === 'partial') h += ' | 📝 부분 커버: ' + escHtml(item.matchPost || '');
   else if (item.matchStatus === 'no_data') h += ' | 📝 글 목록 없음';
   else h += ' | 📝 관련 글 없음';
@@ -680,18 +721,24 @@ function renderCard(item) {
   const appearedDates = Object.keys(item.dateRatios).sort();
   if (appearedDates.length > 0) {
     const latest = appearedDates[appearedDates.length - 1];
-    const oldest = appearedDates[0];
     const today = new Date().toISOString().slice(0, 10);
     const daysAgo = Math.round((new Date(today) - new Date(latest)) / (1000 * 60 * 60 * 24));
     const freshLabel = daysAgo === 0 ? '오늘' : daysAgo === 1 ? '어제' : daysAgo + '일 전';
     h += '<div class="kw-dates">📅 ' + appearedDates.map(d => {
-      const short = d.slice(5); // "03-06"
+      const short = d.slice(5);
       const r = item.dateRatios[d];
       return '<span class="date-chip" title="' + d + ' (' + r.toFixed(1) + '%)">' + short + '</span>';
     }).join(' ') + ' <span class="date-fresh">최근: ' + freshLabel + '</span></div>';
   }
   if (item.variants.length > 0) {
     h += '<div class="kw-variants">🔍 변형: ' + item.variants.map(escHtml).join(', ') + '</div>';
+  }
+  // 수동 매핑 버튼
+  const kwEsc = escHtml(item.representative).replace(/'/g, "\\'");
+  if (item.manualMatch) {
+    h += '<div class="kw-actions"><button class="btn-unmap" onclick="removeMapping(\'' + kwEsc + '\')">매핑 해제</button></div>';
+  } else {
+    h += '<div class="kw-actions"><button class="btn-map" onclick="showMapModal(\'' + kwEsc + '\')">글 직접 연결</button></div>';
   }
   h += '</div>';
   return h;
@@ -765,6 +812,43 @@ function escHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+// ===== MANUAL MAPPING =====
+let _mapKeyword = '';
+function showMapModal(keyword) {
+  _mapKeyword = keyword;
+  document.getElementById('mapKeyword').textContent = keyword;
+  document.getElementById('mapCustom').value = '';
+  const sel = document.getElementById('mapSelect');
+  sel.innerHTML = '<option value="">-- 글 선택 --</option>';
+  if (myPosts && myPosts.posts) {
+    for (const p of myPosts.posts) {
+      const opt = document.createElement('option');
+      opt.value = p.title;
+      opt.textContent = p.title;
+      sel.appendChild(opt);
+    }
+  }
+  document.getElementById('mapModal').classList.add('show');
+}
+function closeMapModal() { document.getElementById('mapModal').classList.remove('show'); }
+function saveMapping() {
+  const sel = document.getElementById('mapSelect').value;
+  const custom = document.getElementById('mapCustom').value.trim();
+  const postTitle = custom || sel;
+  if (!postTitle) { toast('글을 선택하거나 입력하세요', true); return; }
+  manualMappings[_mapKeyword] = postTitle;
+  localStorage.setItem('manual_mappings', JSON.stringify(manualMappings));
+  closeMapModal();
+  toast('"' + _mapKeyword + '" → 수동 연결 완료');
+  renderAll();
+}
+function removeMapping(keyword) {
+  delete manualMappings[keyword];
+  localStorage.setItem('manual_mappings', JSON.stringify(manualMappings));
+  toast('"' + keyword + '" 매핑 해제');
+  renderAll();
 }
 
 function toast(msg, warn) {
