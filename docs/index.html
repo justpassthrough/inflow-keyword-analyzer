@@ -310,21 +310,39 @@ async function ghPut(path, content, sha) {
   } catch (e) { console.error('GitHub PUT error:', e); return false; }
 }
 
+async function ghFetchRaw(path) {
+  // raw.githubusercontent.com으로 직접 JSON을 가져옴 (base64 디코딩 문제 회피)
+  try {
+    const res = await fetch(`https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/main/${path}`, {
+      cache: 'no-store'
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) { console.error('Raw fetch error:', path, e); return null; }
+}
+
 async function loadFromGitHub() {
   const pat = getPat();
   if (!pat) { updateHistoryInfo(); return; }
   toast('GitHub에서 데이터 로드 중...');
 
-  const [histData, postsData] = await Promise.all([ghFetch(HISTORY_PATH), ghFetch(POSTS_PATH)]);
+  // sha는 Contents API로, 데이터는 raw로 가져옴
+  const [histMeta, histRaw, postsRaw] = await Promise.all([
+    ghFetch(HISTORY_PATH),
+    ghFetchRaw(HISTORY_PATH),
+    ghFetchRaw(POSTS_PATH)
+  ]);
 
-  if (histData && histData.content) {
-    try {
-      inflowHistory = JSON.parse(decodeURIComponent(escape(atob(histData.content.replace(/\n/g, '')))));
-      historySha = histData.sha;
-    } catch {}
+  if (histMeta) historySha = histMeta.sha;
+  if (histRaw && typeof histRaw === 'object') {
+    inflowHistory = histRaw;
+    console.log('History loaded:', Object.keys(inflowHistory).length, 'days');
   }
-  if (postsData && postsData.content) {
-    try { myPosts = JSON.parse(decodeURIComponent(escape(atob(postsData.content.replace(/\n/g, ''))))); } catch {}
+  if (postsRaw && postsRaw.posts) {
+    myPosts = postsRaw;
+    console.log('Posts loaded:', myPosts.posts.length, 'posts');
+  } else {
+    console.warn('my_posts.json 로드 실패 또는 비어있음');
   }
   toast('데이터 로드 완료');
   updateHistoryInfo();
