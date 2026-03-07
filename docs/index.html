@@ -54,6 +54,10 @@ header .meta { font-size: 0.85rem; opacity: 0.85; }
 .trend-bar { height: 18px; background: #1a73e8; border-radius: 4px; transition: width 0.3s; }
 .trend-bar-value { min-width: 80px; color: #666; }
 
+.kw-dates { font-size: 0.78rem; color: #888; margin-top: 4px; display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
+.date-chip { background: #e8f0fe; color: #1a73e8; padding: 1px 6px; border-radius: 4px; font-size: 0.72rem; cursor: default; }
+.date-fresh { margin-left: 4px; color: #e65100; font-weight: 600; }
+
 .status-msg { text-align: center; padding: 20px; color: #999; font-size: 0.9rem; }
 .toast { position: fixed; bottom: 20px; right: 20px; background: #333; color: #fff; padding: 12px 20px; border-radius: 8px; font-size: 0.85rem; opacity: 0; transition: opacity 0.3s; z-index: 1000; }
 .toast.show { opacity: 1; }
@@ -672,6 +676,20 @@ function renderCard(item) {
   else if (item.matchStatus === 'no_data') h += ' | 📝 글 목록 없음';
   else h += ' | 📝 관련 글 없음';
   h += '</div>';
+  // 등장 날짜 표시
+  const appearedDates = Object.keys(item.dateRatios).sort();
+  if (appearedDates.length > 0) {
+    const latest = appearedDates[appearedDates.length - 1];
+    const oldest = appearedDates[0];
+    const today = new Date().toISOString().slice(0, 10);
+    const daysAgo = Math.round((new Date(today) - new Date(latest)) / (1000 * 60 * 60 * 24));
+    const freshLabel = daysAgo === 0 ? '오늘' : daysAgo === 1 ? '어제' : daysAgo + '일 전';
+    h += '<div class="kw-dates">📅 ' + appearedDates.map(d => {
+      const short = d.slice(5); // "03-06"
+      const r = item.dateRatios[d];
+      return '<span class="date-chip" title="' + d + ' (' + r.toFixed(1) + '%)">' + short + '</span>';
+    }).join(' ') + ' <span class="date-fresh">최근: ' + freshLabel + '</span></div>';
+  }
   if (item.variants.length > 0) {
     h += '<div class="kw-variants">🔍 변형: ' + item.variants.map(escHtml).join(', ') + '</div>';
   }
