@@ -1,0 +1,32 @@
+name: Daily Post Update
+on:
+  schedule:
+    - cron: '0 23 * * *'   # 매일 08:00 KST (UTC 23:00)
+  workflow_dispatch:         # 수동 트리거 가능
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 lxml feedparser
+
+      - name: Update post list
+        env:
+          BLOG_ID: biopharmblog
+        run: python scripts/update_posts.py
+
+      - name: Commit changes
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add data/my_posts.json
+          git diff --staged --quiet || git commit -m "Auto: update post list $(date +%Y-%m-%d)"
+          git push
