@@ -284,6 +284,11 @@ async function ghPut(path, content, sha) {
   const pat = getPat();
   if (!pat) return false;
   try {
+    // sha가 없으면 먼저 현재 파일의 sha를 가져옴
+    if (!sha) {
+      const existing = await ghFetch(path);
+      if (existing && existing.sha) sha = existing.sha;
+    }
     const body = {
       message: 'Auto: update ' + path.split('/').pop() + ' ' + new Date().toISOString().slice(0, 10),
       content: btoa(unescape(encodeURIComponent(JSON.stringify(content, null, 2)))),
@@ -299,8 +304,10 @@ async function ghPut(path, content, sha) {
       if (path === HISTORY_PATH) historySha = data.content.sha;
       return true;
     }
+    const err = await res.json().catch(() => ({}));
+    console.error('GitHub PUT failed:', res.status, err);
     return false;
-  } catch { return false; }
+  } catch (e) { console.error('GitHub PUT error:', e); return false; }
 }
 
 async function loadFromGitHub() {
