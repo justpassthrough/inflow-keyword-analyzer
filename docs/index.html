@@ -465,9 +465,62 @@ function extractCoreWords(text) {
   return words.filter(w => !PARTICLES.includes(w) && w.length > 1);
 }
 
+// 글 목록에서 어휘 사전 구축 (붙어있는 키워드 분리용)
+function buildVocab(posts) {
+  const vocab = new Set();
+  if (!posts || !posts.posts) return vocab;
+  for (const p of posts.posts) {
+    extractCoreWords(p.title).forEach(w => { if (w.length >= 2) vocab.add(w); });
+    (p.body_keywords || []).forEach(w => { if (w.length >= 2) vocab.add(w); });
+  }
+  return vocab;
+}
+
+// 붙어있는 키워드에서 알려진 단어 추출 ("순수알부민함량비교" → ["알부민","함량","비교"])
+function splitBlob(blob, vocab) {
+  const found = [];
+  const sorted = [...vocab].sort((a, b) => b.length - a.length); // 긴 단어 우선
+  let remaining = blob;
+  for (const word of sorted) {
+    if (remaining.includes(word)) {
+      found.push(word);
+      remaining = remaining.replace(word, ' ');
+    }
+  }
+  return found.length > 0 ? found : [blob];
+}
+
+// 유사 단어 매칭: 공통 접두사 2자 이상 & 60%+ 일치
+function wordSimilar(w, tw) {
+  if (w === tw) return true;
+  if (tw.includes(w) || w.includes(tw)) return true;
+  // 공통 접두사 체크 ("경구약" ↔ "경구형" → "경구" 공유)
+  const shorter = w.length <= tw.length ? w : tw;
+  const longer = w.length > tw.length ? w : tw;
+  if (shorter.length < 2) return false;
+  let prefix = 0;
+  for (let i = 0; i < shorter.length; i++) {
+    if (shorter[i] === longer[i]) prefix++; else break;
+  }
+  return prefix >= 2 && prefix >= shorter.length * 0.6;
+}
+
+let _vocab = null;
+function getVocab(posts) {
+  if (!_vocab) _vocab = buildVocab(posts);
+  return _vocab;
+}
+
 function matchKeywordToPosts(keyword, posts) {
   if (!posts || !posts.posts || posts.posts.length === 0) return { status: 'no_data', post: null };
-  const kwWords = extractCoreWords(keyword);
+  let kwWords = extractCoreWords(keyword);
+
+  // 단어가 1개이고 6자 이상이면 붙어있는 키워드 → 분리 시도
+  if (kwWords.length === 1 && kwWords[0].length >= 6) {
+    const split = splitBlob(kwWords[0], getVocab(posts));
+    if (split.length > 1) kwWords = split;
+  }
+
   if (kwWords.length === 0) return { status: 'gap', post: null };
 
   let bestMatch = { status: 'gap', post: null, score: 0 };
@@ -477,24 +530,17 @@ function matchKeywordToPosts(keyword, posts) {
     const bodyKw = post.body_keywords || [];
     const allPostWords = [...titleWords, ...bodyKw.map(w => w.toLowerCase())];
 
-    // 단어 매칭: 긴 덩어리(8자+)는 부분 포함 체크 비활성화 (오매칭 방지)
-    const wordMatch = (w, tw) => {
-      if (w === tw) return true;
-      if (w.length >= 8) return tw.includes(w); // 긴 키워드 덩어리는 포함당하는 경우만
-      return tw.includes(w) || w.includes(tw);
-    };
-    const titleMatches = kwWords.filter(w => titleWords.some(tw => wordMatch(w, tw))).length;
+    const titleMatches = kwWords.filter(w => titleWords.some(tw => wordSimilar(w, tw))).length;
     const titleRatio = titleMatches / kwWords.length;
 
     if (titleRatio >= 0.6) {
-      // covered는 항상 partial보다 우선
       if (bestMatch.status !== 'covered' || titleRatio > bestMatch.score) {
         bestMatch = { status: 'covered', post: post.title, score: titleRatio };
       }
       continue;
     }
 
-    const allMatches = kwWords.filter(w => allPostWords.some(pw => wordMatch(w, pw))).length;
+    const allMatches = kwWords.filter(w => allPostWords.some(pw => wordSimilar(w, pw))).length;
     const allRatio = allMatches / kwWords.length;
     if (allRatio >= 0.4 && bestMatch.status !== 'covered' && allRatio > bestMatch.score) {
       bestMatch = { status: 'partial', post: post.title, score: allRatio };
@@ -505,6 +551,7 @@ function matchKeywordToPosts(keyword, posts) {
 
 // ===== ANALYSIS =====
 function analyze() {
+  _vocab = null; // vocab 캐시 리셋
   const groups = groupKeywords(inflowHistory);
   const analyzed = [];
 
