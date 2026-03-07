@@ -542,6 +542,13 @@ function matchKeywordToPosts(keyword, posts) {
 
     const allMatches = kwWords.filter(w => allPostWords.some(pw => wordSimilar(w, pw))).length;
     const allRatio = allMatches / kwWords.length;
+    // 본문 포함 100% + 제목 1개 이상 → 완전 커버로 승격
+    if (allRatio >= 1.0 && titleMatches >= 1) {
+      if (bestMatch.status !== 'covered' || allRatio > bestMatch.score) {
+        bestMatch = { status: 'covered', post: post.title, score: allRatio };
+      }
+      continue;
+    }
     if (allRatio >= 0.4 && bestMatch.status !== 'covered' && allRatio > bestMatch.score) {
       bestMatch = { status: 'partial', post: post.title, score: allRatio };
     }
