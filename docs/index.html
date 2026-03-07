@@ -477,7 +477,13 @@ function matchKeywordToPosts(keyword, posts) {
     const bodyKw = post.body_keywords || [];
     const allPostWords = [...titleWords, ...bodyKw.map(w => w.toLowerCase())];
 
-    const titleMatches = kwWords.filter(w => titleWords.some(tw => tw.includes(w) || w.includes(tw))).length;
+    // 단어 매칭: 긴 덩어리(8자+)는 부분 포함 체크 비활성화 (오매칭 방지)
+    const wordMatch = (w, tw) => {
+      if (w === tw) return true;
+      if (w.length >= 8) return tw.includes(w); // 긴 키워드 덩어리는 포함당하는 경우만
+      return tw.includes(w) || w.includes(tw);
+    };
+    const titleMatches = kwWords.filter(w => titleWords.some(tw => wordMatch(w, tw))).length;
     const titleRatio = titleMatches / kwWords.length;
 
     if (titleRatio >= 0.6) {
@@ -488,7 +494,7 @@ function matchKeywordToPosts(keyword, posts) {
       continue;
     }
 
-    const allMatches = kwWords.filter(w => allPostWords.some(pw => pw.includes(w) || w.includes(pw))).length;
+    const allMatches = kwWords.filter(w => allPostWords.some(pw => wordMatch(w, pw))).length;
     const allRatio = allMatches / kwWords.length;
     if (allRatio >= 0.4 && bestMatch.status !== 'covered' && allRatio > bestMatch.score) {
       bestMatch = { status: 'partial', post: post.title, score: allRatio };
