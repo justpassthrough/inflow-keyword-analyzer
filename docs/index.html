@@ -393,8 +393,10 @@ function groupKeywords(allKeywordsByDate) {
   for (let i = 0; i < norms.length; i++) {
     for (let j = i + 1; j < norms.length; j++) {
       const a = norms[i], b = norms[j];
-      // Containment
-      if (a.includes(b) || b.includes(a)) { union(a, b); continue; }
+      const shorter = a.length <= b.length ? a : b;
+      const longer = a.length > b.length ? a : b;
+      // Containment: 짧은 쪽이 4글자 이상이고, 긴 쪽과 길이 차이가 5 이하일 때만
+      if (shorter.length >= 4 && longer.length - shorter.length <= 5 && longer.includes(shorter)) { union(a, b); continue; }
       // Edit distance (only for similar length)
       if (levenshtein(a, b) <= 2) union(a, b);
     }
@@ -464,15 +466,11 @@ function extractCoreWords(text) {
 }
 
 function matchKeywordToPosts(keyword, posts) {
-  if (!posts || !posts.posts || posts.posts.length === 0) {
-    console.warn('matchKeywordToPosts: no posts data for', keyword);
-    return { status: 'no_data', post: null };
-  }
+  if (!posts || !posts.posts || posts.posts.length === 0) return { status: 'no_data', post: null };
   const kwWords = extractCoreWords(keyword);
   if (kwWords.length === 0) return { status: 'gap', post: null };
 
   let bestMatch = { status: 'gap', post: null, score: 0 };
-  const debugKw = keyword.includes('품절') || keyword.includes('마운자로');
 
   for (const post of posts.posts) {
     const titleWords = extractCoreWords(post.title);
@@ -482,18 +480,17 @@ function matchKeywordToPosts(keyword, posts) {
     const titleMatches = kwWords.filter(w => titleWords.some(tw => tw.includes(w) || w.includes(tw))).length;
     const titleRatio = titleMatches / kwWords.length;
 
-    if (debugKw && post.title.includes('품절')) {
-      console.log('DEBUG match:', JSON.stringify({keyword, kwWords, postTitle: post.title, titleWords, titleMatches, titleRatio}));
-    }
-
     if (titleRatio >= 0.6) {
-      if (titleRatio > bestMatch.score) bestMatch = { status: 'covered', post: post.title, score: titleRatio };
+      // covered는 항상 partial보다 우선
+      if (bestMatch.status !== 'covered' || titleRatio > bestMatch.score) {
+        bestMatch = { status: 'covered', post: post.title, score: titleRatio };
+      }
       continue;
     }
 
     const allMatches = kwWords.filter(w => allPostWords.some(pw => pw.includes(w) || w.includes(pw))).length;
     const allRatio = allMatches / kwWords.length;
-    if (allRatio >= 0.4 && allRatio > bestMatch.score) {
+    if (allRatio >= 0.4 && bestMatch.status !== 'covered' && allRatio > bestMatch.score) {
       bestMatch = { status: 'partial', post: post.title, score: allRatio };
     }
   }
