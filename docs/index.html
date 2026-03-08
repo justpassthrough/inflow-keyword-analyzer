@@ -161,6 +161,10 @@ footer { text-align: center; padding: 16px; font-size: 0.75rem; color: #aaa; }
       <option value="">-- 글 선택 --</option>
     </select>
     <input type="text" id="mapCustom" placeholder="또는 글 제목 직접 입력" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:8px; margin-bottom:12px; font-size:0.9rem;">
+    <div style="display:flex; gap:12px; margin-bottom:12px; font-size:0.85rem;">
+      <label style="cursor:pointer;"><input type="radio" name="mapType" value="covered" checked style="margin-right:4px;">전용글 (완전 커버)</label>
+      <label style="cursor:pointer;"><input type="radio" name="mapType" value="partial" style="margin-right:4px;">부분 커버</label>
+    </div>
     <div class="btn-row">
       <button class="btn-cancel" onclick="closeMapModal()">취소</button>
       <button class="btn-save" onclick="saveMapping()">연결</button>
@@ -552,7 +556,14 @@ function getVocab(posts) {
 
 function matchKeywordToPosts(keyword, posts) {
   // 수동 매핑 우선
-  if (manualMappings[keyword]) return { status: 'covered', post: manualMappings[keyword], score: 2, manual: true };
+  if (manualMappings[keyword]) {
+    const m = manualMappings[keyword];
+    // 기존 문자열 형식 호환 + 새 객체 형식
+    const post = typeof m === 'string' ? m : m.post;
+    const type = typeof m === 'string' ? 'covered' : m.type;
+    const status = type === 'partial' ? 'partial' : 'covered';
+    return { status, post, score: status === 'covered' ? 2 : 1, manual: true };
+  }
   if (!posts || !posts.posts || posts.posts.length === 0) return { status: 'no_data', post: null };
   let kwWords = extractCoreWords(keyword);
 
@@ -838,7 +849,8 @@ function saveMapping() {
   const custom = document.getElementById('mapCustom').value.trim();
   const postTitle = custom || sel;
   if (!postTitle) { toast('글을 선택하거나 입력하세요', true); return; }
-  manualMappings[_mapKeyword] = postTitle;
+  const mapType = document.querySelector('input[name="mapType"]:checked').value;
+  manualMappings[_mapKeyword] = { post: postTitle, type: mapType };
   localStorage.setItem('manual_mappings', JSON.stringify(manualMappings));
   closeMapModal();
   toast('"' + _mapKeyword + '" → 수동 연결 완료');
