@@ -690,7 +690,7 @@ function renderAll() {
   if (myPosts && myPosts.posts) {
     document.getElementById('postsSection').style.display = 'block';
     document.getElementById('postCount').textContent = myPosts.posts.length;
-    document.getElementById('postsList').innerHTML = myPosts.posts.map(p =>
+    document.getElementById('postsList').innerHTML = [...myPosts.posts].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(p =>
       '<div style="padding:6px 0; border-bottom:1px solid #f0f0f0; font-size:0.85rem;">' +
       '<a href="' + escHtml(p.url) + '" target="_blank" style="color:#1a73e8; text-decoration:none;">' + escHtml(p.title) + '</a>' +
       '<span style="color:#aaa; margin-left:8px;">' + escHtml(p.date || '') + '</span></div>'
