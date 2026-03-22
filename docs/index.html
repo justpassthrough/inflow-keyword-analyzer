@@ -830,9 +830,19 @@ async function renderAll() {
   }
 
   const analyzed = await analyze();
-  const urgent = analyzed.filter(a => a.consecutive >= 5 && a.matchStatus !== 'covered');
-  const consider = analyzed.filter(a => a.consecutive >= 3 && a.consecutive < 5 && a.matchStatus !== 'covered');
-  const monitor = analyzed.filter(a => a.consecutive === 2 && a.matchStatus !== 'covered');
+  // 정렬: 최근 등장일 → 연속일수 내림차순
+  function sortByRecencyThenConsecutive(items) {
+    return items.sort((a, b) => {
+      const aLatest = Object.keys(a.dateRatios).sort().pop() || '';
+      const bLatest = Object.keys(b.dateRatios).sort().pop() || '';
+      if (aLatest !== bLatest) return bLatest.localeCompare(aLatest); // 최근 날짜 우선
+      return b.consecutive - a.consecutive; // 연속일수 내림차순
+    });
+  }
+
+  const urgent = sortByRecencyThenConsecutive(analyzed.filter(a => a.consecutive >= 5 && a.matchStatus !== 'covered'));
+  const consider = sortByRecencyThenConsecutive(analyzed.filter(a => a.consecutive >= 3 && a.consecutive < 5 && a.matchStatus !== 'covered'));
+  const monitor = sortByRecencyThenConsecutive(analyzed.filter(a => a.consecutive === 2 && a.matchStatus !== 'covered'));
   const covered = analyzed.filter(a => a.matchStatus === 'covered');
   const gap = analyzed.filter(a => a.matchStatus === 'gap' || a.matchStatus === 'partial' || a.matchStatus === 'no_data');
 
