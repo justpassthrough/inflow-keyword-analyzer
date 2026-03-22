@@ -109,6 +109,7 @@ footer { text-align: center; padding: 16px; font-size: 0.75rem; color: #aaa; }
 
   <div class="toolbar">
     <button onclick="showPatModal()">GitHub PAT 설정</button>
+    <button onclick="showOpenAIModal()">OpenAI API Key</button>
     <button onclick="exportHistory()">히스토리 내보내기</button>
   </div>
 
@@ -172,6 +173,25 @@ footer { text-align: center; padding: 16px; font-size: 0.75rem; color: #aaa; }
   </div>
 </div>
 
+<div class="pat-modal" id="openaiModal">
+  <div class="pat-modal-content">
+    <h3>OpenAI API Key 설정</h3>
+    <p style="font-size:0.82rem; color:#666; margin-bottom:8px;">임베딩 기반 키워드 그룹핑에 사용됩니다.</p>
+    <p style="font-size:0.78rem; color:#999; margin-bottom:12px;">비용: 월 ~10원 수준 (text-embedding-3-small)</p>
+    <input type="password" id="openaiKeyInput" placeholder="sk-xxxxxxxxxxxx">
+    <div style="margin-bottom:12px;">
+      <label style="font-size:0.82rem; color:#666;">유사도 임계값: <span id="thresholdValue">0.80</span></label>
+      <input type="range" id="thresholdSlider" min="0.60" max="0.95" step="0.01" value="0.80" style="width:100%;" oninput="document.getElementById('thresholdValue').textContent=this.value">
+      <div style="display:flex; justify-content:space-between; font-size:0.72rem; color:#aaa;"><span>넓게 묶기 (0.60)</span><span>엄격히 분리 (0.95)</span></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn-cancel" onclick="clearEmbeddingCache()">캐시 초기화</button>
+      <button class="btn-cancel" onclick="closeOpenAIModal()">취소</button>
+      <button class="btn-save" onclick="saveOpenAIKey()">저장</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 <footer>유입 키워드 분석기 v1.0 · GitHub Pages</footer>
 
@@ -190,18 +210,25 @@ const SEARCH_SOURCES = [
 const EXCLUDE_PATTERNS = [/^https?:\/\//, /^기타$/];
 const PARTICLES = ['은','는','이','가','을','를','의','에','에서','으로','과','와','도','만','하고','하면','하는'];
 
+// OpenAI Embedding
+const OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';
+const OPENAI_EMBEDDING_DIMS = 256;
+const SIMILARITY_THRESHOLD = 0.80;
+
 // ===== STATE =====
 let inflowHistory = {};
 let myPosts = null;
 let historySha = null;
 let manualMappings = {}; // { "키워드": "글 제목" } — 수동 매핑
+let embeddingCache = {}; // normalized keyword -> embedding vector
 
 // ===== INIT =====
 document.addEventListener('DOMContentLoaded', async () => {
   manualMappings = JSON.parse(localStorage.getItem('manual_mappings') || '{}');
+  loadEmbeddingCache();
   setupDropZone();
   await loadFromGitHub();
-  renderAll();
+  await renderAll();
 });
 
 // ===== DROP ZONE =====
@@ -234,7 +261,7 @@ async function handleFiles(files) {
   if (parsed > 0) {
     toast(parsed + '개 파일 파싱 완료');
     await saveToGitHub();
-    renderAll();
+    await renderAll();
   }
 }
 
@@ -399,6 +426,79 @@ async function saveToGitHub() {
   toast(ok ? 'GitHub 저장 완료' : 'GitHub 저장 실패');
 }
 
+// ===== OPENAI EMBEDDING =====
+function getOpenAIKey() { return localStorage.getItem('openai_api_key') || ''; }
+
+function loadEmbeddingCache() {
+  try { embeddingCache = JSON.parse(localStorage.getItem('embedding_cache') || '{}'); }
+  catch { embeddingCache = {}; }
+}
+
+function saveEmbeddingCache() {
+  localStorage.setItem('embedding_cache', JSON.stringify(embeddingCache));
+}
+
+function getSimilarityThreshold() {
+  return parseFloat(localStorage.getItem('similarity_threshold') || SIMILARITY_THRESHOLD);
+}
+
+async function getEmbeddings(normToOriginal) {
+  // normToOriginal: { normalizedKey: originalKeyword, ... }
+  // Returns: { normalizedKey: vector, ... } or null
+  const apiKey = getOpenAIKey();
+  if (!apiKey) return null;
+
+  const allNorms = Object.keys(normToOriginal);
+  const uncached = allNorms.filter(n => !embeddingCache[n]);
+
+  if (uncached.length > 0) {
+    toast('키워드 임베딩 중... (' + uncached.length + '개)');
+    for (let i = 0; i < uncached.length; i += 100) {
+      const batch = uncached.slice(i, i + 100);
+      const texts = batch.map(n => normToOriginal[n]); // 원본 키워드(공백 포함)로 임베딩
+      try {
+        const res = await fetch('https://api.openai.com/v1/embeddings', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: OPENAI_EMBEDDING_MODEL, input: texts, dimensions: OPENAI_EMBEDDING_DIMS })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          console.error('OpenAI API error:', res.status, err);
+          toast('OpenAI API 오류: ' + (err.error?.message || res.status), true);
+          return null;
+        }
+        const data = await res.json();
+        for (let j = 0; j < data.data.length; j++) {
+          embeddingCache[batch[j]] = data.data[j].embedding;
+        }
+      } catch (e) {
+        console.error('OpenAI embedding error:', e);
+        toast('임베딩 API 호출 실패', true);
+        return null;
+      }
+    }
+    saveEmbeddingCache();
+    toast('임베딩 완료 (' + uncached.length + '개 새로 처리)');
+  }
+
+  const result = {};
+  for (const n of allNorms) {
+    if (embeddingCache[n]) result[n] = embeddingCache[n];
+  }
+  return result;
+}
+
+function cosineSim(a, b) {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
 // ===== KEYWORD NORMALIZATION =====
 function normalize(s) { return s.replace(/\s+/g, '').toLowerCase(); }
 
@@ -414,7 +514,7 @@ function levenshtein(a, b) {
   return dp[m][n];
 }
 
-function groupKeywords(allKeywordsByDate) {
+async function groupKeywords(allKeywordsByDate) {
   // Collect all unique keywords with their best ratio
   const kwMap = {}; // normalized -> { original, bestRatio, dates: {date: ratio} }
   for (const [date, keywords] of Object.entries(allKeywordsByDate)) {
@@ -426,22 +526,44 @@ function groupKeywords(allKeywordsByDate) {
     }
   }
 
-  // Group by containment + edit distance
   const norms = Object.keys(kwMap);
   const parent = {};
   norms.forEach(n => parent[n] = n);
   function find(x) { return parent[x] === x ? x : (parent[x] = find(parent[x])); }
   function union(a, b) { parent[find(a)] = find(b); }
 
-  for (let i = 0; i < norms.length; i++) {
-    for (let j = i + 1; j < norms.length; j++) {
-      const a = norms[i], b = norms[j];
-      const shorter = a.length <= b.length ? a : b;
-      const longer = a.length > b.length ? a : b;
-      // Containment: 짧은 쪽이 4글자 이상이고, 긴 쪽과 길이 차이가 5 이하일 때만
-      if (shorter.length >= 4 && longer.length - shorter.length <= 5 && longer.includes(shorter)) { union(a, b); continue; }
-      // Edit distance (only for similar length)
-      if (levenshtein(a, b) <= 2) union(a, b);
+  // 임베딩 기반 그룹핑 시도
+  const normToOriginal = {};
+  for (const n of norms) normToOriginal[n] = kwMap[n].original;
+  const embeddings = await getEmbeddings(normToOriginal);
+
+  const threshold = getSimilarityThreshold();
+
+  if (embeddings && Object.keys(embeddings).length > 0) {
+    // 임베딩 기반: 코사인 유사도 + 편집거리(오타 보정)
+    for (let i = 0; i < norms.length; i++) {
+      for (let j = i + 1; j < norms.length; j++) {
+        const a = norms[i], b = norms[j];
+        // 편집거리 ≤ 2 → 오타 보정
+        if (levenshtein(a, b) <= 2) { union(a, b); continue; }
+        // 코사인 유사도 ≥ threshold → 의미 유사
+        if (embeddings[a] && embeddings[b]) {
+          if (cosineSim(embeddings[a], embeddings[b]) >= threshold) {
+            union(a, b);
+          }
+        }
+      }
+    }
+  } else {
+    // Fallback: 기존 포함관계 + 편집거리 (OpenAI 키 없을 때)
+    for (let i = 0; i < norms.length; i++) {
+      for (let j = i + 1; j < norms.length; j++) {
+        const a = norms[i], b = norms[j];
+        const shorter = a.length <= b.length ? a : b;
+        const longer = a.length > b.length ? a : b;
+        if (shorter.length >= 4 && longer.length - shorter.length <= 5 && longer.includes(shorter)) { union(a, b); continue; }
+        if (levenshtein(a, b) <= 2) union(a, b);
+      }
     }
   }
 
@@ -609,9 +731,9 @@ function matchKeywordToPosts(keyword, posts) {
 }
 
 // ===== ANALYSIS =====
-function analyze() {
+async function analyze() {
   _vocab = null; // vocab 캐시 리셋
-  const groups = groupKeywords(inflowHistory);
+  const groups = await groupKeywords(inflowHistory);
   const analyzed = [];
 
   for (const g of groups) {
@@ -648,7 +770,7 @@ function getTrend(dateRatios) {
 }
 
 // ===== RENDER =====
-function renderAll() {
+async function renderAll() {
   updateHistoryInfo();
   const dates = Object.keys(inflowHistory).sort();
   if (dates.length === 0) {
@@ -658,7 +780,7 @@ function renderAll() {
     return;
   }
 
-  const analyzed = analyze();
+  const analyzed = await analyze();
   const urgent = analyzed.filter(a => a.consecutive >= 5 && a.matchStatus !== 'covered');
   const consider = analyzed.filter(a => a.consecutive >= 3 && a.consecutive < 5 && a.matchStatus !== 'covered');
   const monitor = analyzed.filter(a => a.consecutive === 2 && a.matchStatus !== 'covered');
@@ -807,7 +929,7 @@ async function savePat() {
   closePatModal();
   toast('PAT 저장 완료');
   await loadFromGitHub();
-  renderAll();
+  await renderAll();
 }
 
 function exportHistory() {
@@ -844,7 +966,7 @@ function showMapModal(keyword) {
   document.getElementById('mapModal').classList.add('show');
 }
 function closeMapModal() { document.getElementById('mapModal').classList.remove('show'); }
-function saveMapping() {
+async function saveMapping() {
   const sel = document.getElementById('mapSelect').value;
   const custom = document.getElementById('mapCustom').value.trim();
   const postTitle = custom || sel;
@@ -854,13 +976,37 @@ function saveMapping() {
   localStorage.setItem('manual_mappings', JSON.stringify(manualMappings));
   closeMapModal();
   toast('"' + _mapKeyword + '" → 수동 연결 완료');
-  renderAll();
+  await renderAll();
 }
-function removeMapping(keyword) {
+async function removeMapping(keyword) {
   delete manualMappings[keyword];
   localStorage.setItem('manual_mappings', JSON.stringify(manualMappings));
   toast('"' + keyword + '" 매핑 해제');
-  renderAll();
+  await renderAll();
+}
+
+// ===== OPENAI MODAL =====
+function showOpenAIModal() {
+  document.getElementById('openaiKeyInput').value = getOpenAIKey();
+  document.getElementById('thresholdSlider').value = getSimilarityThreshold();
+  document.getElementById('thresholdValue').textContent = getSimilarityThreshold();
+  document.getElementById('openaiModal').classList.add('show');
+}
+function closeOpenAIModal() { document.getElementById('openaiModal').classList.remove('show'); }
+async function saveOpenAIKey() {
+  const key = document.getElementById('openaiKeyInput').value.trim();
+  const threshold = document.getElementById('thresholdSlider').value;
+  if (key) localStorage.setItem('openai_api_key', key);
+  else { localStorage.removeItem('openai_api_key'); embeddingCache = {}; localStorage.removeItem('embedding_cache'); }
+  localStorage.setItem('similarity_threshold', threshold);
+  closeOpenAIModal();
+  toast('OpenAI 설정 저장 완료');
+  await renderAll();
+}
+function clearEmbeddingCache() {
+  embeddingCache = {};
+  localStorage.removeItem('embedding_cache');
+  toast('임베딩 캐시 초기화 완료');
 }
 
 function toast(msg, warn) {
