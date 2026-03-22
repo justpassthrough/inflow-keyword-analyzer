@@ -225,7 +225,7 @@ let embeddingCache = {}; // normalized keyword -> embedding vector
 // ===== INIT =====
 document.addEventListener('DOMContentLoaded', async () => {
   manualMappings = JSON.parse(localStorage.getItem('manual_mappings') || '{}');
-  loadEmbeddingCache();
+  await loadEmbeddingCache();
   setupDropZone();
   await loadFromGitHub();
   await renderAll();
@@ -429,17 +429,57 @@ async function saveToGitHub() {
 // ===== OPENAI EMBEDDING =====
 function getOpenAIKey() { return localStorage.getItem('openai_api_key') || ''; }
 
-function loadEmbeddingCache() {
-  try { embeddingCache = JSON.parse(localStorage.getItem('embedding_cache') || '{}'); }
-  catch { embeddingCache = {}; }
-}
-
-function saveEmbeddingCache() {
-  localStorage.setItem('embedding_cache', JSON.stringify(embeddingCache));
-}
-
 function getSimilarityThreshold() {
   return parseFloat(localStorage.getItem('similarity_threshold') || SIMILARITY_THRESHOLD);
+}
+
+// IndexedDB for embedding cache (localStorage는 5MB 제한이라 초과됨)
+function openEmbeddingDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('EmbeddingCache', 1);
+    req.onupgradeneeded = e => { e.target.result.createObjectStore('embeddings'); };
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror = e => reject(e.target.error);
+  });
+}
+
+async function loadEmbeddingCache() {
+  try {
+    // 기존 localStorage 캐시가 있으면 제거 (마이그레이션)
+    localStorage.removeItem('embedding_cache');
+    const db = await openEmbeddingDB();
+    const tx = db.transaction('embeddings', 'readonly');
+    const store = tx.objectStore('embeddings');
+    return new Promise(resolve => {
+      const req = store.openCursor();
+      req.onsuccess = e => {
+        const cursor = e.target.result;
+        if (cursor) { embeddingCache[cursor.key] = cursor.value; cursor.continue(); }
+        else { console.log('Embedding cache loaded:', Object.keys(embeddingCache).length, 'entries'); resolve(); }
+      };
+      req.onerror = () => resolve();
+    });
+  } catch (e) { console.warn('IndexedDB load failed:', e); embeddingCache = {}; }
+}
+
+async function saveEmbeddingBatch(entries) {
+  // entries: [{key, value}, ...]
+  try {
+    const db = await openEmbeddingDB();
+    const tx = db.transaction('embeddings', 'readwrite');
+    const store = tx.objectStore('embeddings');
+    for (const { key, value } of entries) store.put(value, key);
+    return new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = reject; });
+  } catch (e) { console.error('IndexedDB save error:', e); }
+}
+
+async function clearEmbeddingDB() {
+  try {
+    const db = await openEmbeddingDB();
+    const tx = db.transaction('embeddings', 'readwrite');
+    tx.objectStore('embeddings').clear();
+    return new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = reject; });
+  } catch (e) { console.error('IndexedDB clear error:', e); }
 }
 
 async function getEmbeddings(normToOriginal) {
@@ -469,16 +509,18 @@ async function getEmbeddings(normToOriginal) {
           return null;
         }
         const data = await res.json();
+        const newEntries = [];
         for (let j = 0; j < data.data.length; j++) {
           embeddingCache[batch[j]] = data.data[j].embedding;
+          newEntries.push({ key: batch[j], value: data.data[j].embedding });
         }
+        await saveEmbeddingBatch(newEntries);
       } catch (e) {
         console.error('OpenAI embedding error:', e);
         toast('임베딩 API 호출 실패', true);
         return null;
       }
     }
-    saveEmbeddingCache();
     toast('임베딩 완료 (' + uncached.length + '개 새로 처리)');
   }
 
@@ -997,15 +1039,15 @@ async function saveOpenAIKey() {
   const key = document.getElementById('openaiKeyInput').value.trim();
   const threshold = document.getElementById('thresholdSlider').value;
   if (key) localStorage.setItem('openai_api_key', key);
-  else { localStorage.removeItem('openai_api_key'); embeddingCache = {}; localStorage.removeItem('embedding_cache'); }
+  else { localStorage.removeItem('openai_api_key'); embeddingCache = {}; await clearEmbeddingDB(); }
   localStorage.setItem('similarity_threshold', threshold);
   closeOpenAIModal();
   toast('OpenAI 설정 저장 완료');
   await renderAll();
 }
-function clearEmbeddingCache() {
+async function clearEmbeddingCache() {
   embeddingCache = {};
-  localStorage.removeItem('embedding_cache');
+  await clearEmbeddingDB();
   toast('임베딩 캐시 초기화 완료');
 }
 
