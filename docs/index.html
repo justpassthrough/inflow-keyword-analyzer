@@ -617,17 +617,24 @@ async function groupKeywords(allKeywordsByDate) {
     groups[root].members.push(norm);
   }
 
-  // For each group, pick representative (highest bestRatio) and merge dates
+  // For each group, pick representative (가장 자주 등장 → 총 비율 합 높은 키워드)
   const result = [];
   for (const group of Object.values(groups)) {
     let repNorm = group.members[0];
-    let repRatio = 0;
+    let repDateCount = 0;
+    let repTotalRatio = 0;
     const mergedDates = {};
     const variants = new Set();
 
     for (const norm of group.members) {
       const info = kwMap[norm];
-      if (info.bestRatio > repRatio) { repRatio = info.bestRatio; repNorm = norm; }
+      const dateCount = Object.keys(info.dates).length;
+      const totalRatio = Object.values(info.dates).reduce((s, r) => s + r, 0);
+      if (dateCount > repDateCount || (dateCount === repDateCount && totalRatio > repTotalRatio)) {
+        repDateCount = dateCount;
+        repTotalRatio = totalRatio;
+        repNorm = norm;
+      }
       for (const [d, r] of Object.entries(info.dates)) {
         mergedDates[d] = (mergedDates[d] || 0) + r;
       }
@@ -641,7 +648,7 @@ async function groupKeywords(allKeywordsByDate) {
       representative: rep,
       variants: [...variants],
       dateRatios: mergedDates,
-      bestRatio: repRatio
+      bestRatio: Math.max(...Object.values(mergedDates))
     });
   }
   return result;
