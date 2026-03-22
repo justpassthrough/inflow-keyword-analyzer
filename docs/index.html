@@ -830,13 +830,18 @@ async function renderAll() {
   }
 
   const analyzed = await analyze();
-  // 정렬: 최근 등장일 → 연속일수 내림차순
+  // 정렬: 연속 구간의 마지막 날짜(최근) → 연속일수 내림차순
   function sortByRecencyThenConsecutive(items) {
     return items.sort((a, b) => {
-      const aLatest = Object.keys(a.dateRatios).sort().pop() || '';
-      const bLatest = Object.keys(b.dateRatios).sort().pop() || '';
-      if (aLatest !== bLatest) return bLatest.localeCompare(aLatest); // 최근 날짜 우선
-      return b.consecutive - a.consecutive; // 연속일수 내림차순
+      // 연속 구간의 시작(=가장 최근) 날짜로 비교
+      const aDates = Object.keys(a.dateRatios).sort().reverse();
+      const bDates = Object.keys(b.dateRatios).sort().reverse();
+      // 연속 구간: 최신 날짜부터 연속인 마지막 날짜까지
+      const aRecent = aDates[0] || '';
+      const bRecent = bDates[0] || '';
+      // 연속 구간의 첫 날(가장 최근 등장일)로 비교
+      if (aRecent !== bRecent) return bRecent.localeCompare(aRecent);
+      return b.consecutive - a.consecutive;
     });
   }
 
