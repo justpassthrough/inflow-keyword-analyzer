@@ -116,7 +116,7 @@ footer { text-align: center; padding: 16px; font-size: 0.75rem; color: #aaa; }
   <div class="drop-zone" id="dropZone">
     <div class="icon">📂</div>
     <p><strong>유입분석 엑셀 파일을 여기에 놓으세요</strong></p>
-    <p style="font-size:0.82rem; color:#888;">여러 날짜 파일 한번에 OK · .xlsx 파일만</p>
+    <p style="font-size:0.82rem; color:#888;">일간·주간·월간 모두 OK (주간=그 7일에 자동 반영) · 여러 파일 한번에 · .xlsx만</p>
     <div class="history-info" id="historyInfo"></div>
     <input type="file" id="fileInput" multiple accept=".xlsx,.xls">
   </div>
@@ -251,9 +251,10 @@ async function handleFiles(files) {
       const wb = XLSX.read(data, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
-      const result = parseExcel(rows);
+      const result = parseExcel(rows, file.name);
       if (result) {
-        inflowHistory[result.date] = result.keywords;
+        // 일간=1일, 주간=7일, 월간=한달 → 기간의 모든 날짜에 같은 비율을 채움(펼치기).
+        for (const d of result.dates) inflowHistory[d] = result.keywords;
         parsed++;
       }
     } catch (e) { console.error('파싱 실패:', file.name, e); toast('파싱 실패: ' + file.name); }
@@ -275,15 +276,37 @@ function readFile(file) {
 }
 
 // ===== EXCEL PARSING =====
-function parseExcel(rows) {
+// 파일 기간(일간/주간/월간)의 모든 날짜를 YYYY-MM-DD 배열로.
+// 우선 파일명의 기간(_START_END_)을 쓰고, 없으면 R4의 단일 날짜로 폴백.
+function expandDates(startStr, endStr) {
+  const out = [];
+  const s = new Date(startStr + 'T00:00:00');
+  const e = new Date(endStr + 'T00:00:00');
+  if (isNaN(s) || isNaN(e) || e < s) return [startStr];
+  // 안전장치: 기간이 비정상적으로 길면(>400일) 시작일만
+  for (let d = new Date(s); d <= e && out.length < 400; d.setDate(d.getDate() + 1)) {
+    out.push(d.getFullYear() + '-' +
+             String(d.getMonth() + 1).padStart(2, '0') + '-' +
+             String(d.getDate()).padStart(2, '0'));
+  }
+  return out.length ? out : [startStr];
+}
+
+function parseExcel(rows, filename) {
   if (!rows || rows.length < 9) return null;
 
-  // Row 4 (index 3): date
-  const dateRaw = rows[3] && rows[3][1];
-  if (!dateRaw) return null;
-  const dateMatch = String(dateRaw).match(/(\d{4})\.(\d{2})\.(\d{2})/);
-  if (!dateMatch) return null;
-  const date = dateMatch[1] + '-' + dateMatch[2] + '-' + dateMatch[3];
+  // 날짜 결정: 파일명의 기간(일간/주간/월간 공통) 우선, 없으면 R4 단일 날짜.
+  let dates = null;
+  const fnMatch = filename && filename.match(/_(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})_/);
+  if (fnMatch) {
+    dates = expandDates(fnMatch[1], fnMatch[2]);
+  } else {
+    const dateRaw = rows[3] && rows[3][1];
+    if (!dateRaw) return null;
+    const dateMatch = String(dateRaw).match(/(\d{4})\.(\d{2})\.(\d{2})/);
+    if (!dateMatch) return null;
+    dates = [dateMatch[1] + '-' + dateMatch[2] + '-' + dateMatch[3]];
+  }
 
   // Row 5 (index 4): "전체" or "검색 유입"
   const selType = rows[4] && rows[4][1] ? String(rows[4][1]).trim() : '전체';
@@ -332,7 +355,7 @@ function parseExcel(rows) {
     keywords.push({ keyword: keyword.trim(), ratio, source });
   }
 
-  return keywords.length > 0 ? { date, keywords } : null;
+  return keywords.length > 0 ? { dates, keywords } : null;
 }
 
 // ===== GITHUB API =====
