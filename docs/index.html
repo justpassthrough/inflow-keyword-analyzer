@@ -579,9 +579,72 @@ function levenshtein(a, b) {
   return dp[m][n];
 }
 
+// ===== TOPIC GROUPING (대상 + 의도) =====
+// (2026-09-17 교체) 예전엔 임베딩 유사도 0.8↑ / 편집거리 2↓ 인 검색어를 사슬처럼 이어 붙였다(union-find).
+// A~B, B~C 가 이어지면 A~C 도 한 묶음이 돼서 비만치료제 검색어 969개가 카드 한 장('이미 커버됨')이 됐고,
+// 그 안의 개별 질문(위고비 빈혈·오젬픽 급여…)이 전부 묻혔다. 또 롱테일 질문은 문구가 매번 달라 하루짜리로 흩어져 숨겨졌다(유입의 52%).
+// 지금은 검색어를 '대상(성분·약 이름) + 의도(부작용·같이 복용·고르기…)'로 풀어 그 조합을 한 주제로 센다.
+const INTENTS = [
+  ['병용', ['같이', '함께', '병용', '동시', '궁합', '상호작용']],
+  ['부작용', ['부작용', '변비', '설사', '두통', '간지럼', '가려움', '빈혈', '어지러', '구토', '메스꺼', '위험', '주의', '금기', '안되나', '안돼', '먹으면안']],
+  ['내성·중단', ['내성', '끊으면', '중단', '요요', '안들을', '효과없', '안듣']],
+  ['복용법', ['먹는법', '먹는방법', '섭취방법', '복용법', '복용', '용량', '하루', '공복', '언제', '시간', '식후', '식전', '기간', '사용법', '맞는법', '나눠맞']],
+  ['처방·급여', ['처방', '급여', '보험', '실비', '기준', '병원', '의원', '성지']],
+  ['가격·구매', ['가격', '최저가', '파는곳', '구매', '직구', '다이소', '올리브영', '쿠팡']],
+  ['고르기', ['추천', '고르는', '고루는', '순위', '비교', '차이', 'vs', '종류', '뭐가', '어떤']],
+  ['공급', ['품절', '품귀', '입고', '재고', '대체', '택배', '구하는', '단종']],
+  ['후기·경과', ['후기', '경험', '전후', '감량', '빠지', '주차', '정체기']],
+  ['효능', ['효능', '효과', '좋은', '도움']],
+  ['성분·정체', ['성분', '함량', '원리', '기전', '뜻', '이란', '란', '의약품', '건기식', '일반의약품']],
+];
+const GENERIC_WORDS = new Set(['천연', '추출물', '고함량', '저분자', '영양제', '약', '약사', '약국', '병원약사', '보충제', '건강기능식품', '건기식', '제품', '먹는', '먹어도', '먹으면', '되나요', '될까요', '되는지', '되나', '가능한가',
+  '방법', '정리', '후기', '정보', '관련', '대한', '있나요', '알려줘', '사람', '경우', '이유', '진짜', '정말', '혹시', '그리고', '또는', '어린이', '임산부', '여성', '남성', '여자', '남자']);
+const ENTITY_ALIAS = { '밀크시슬': '밀크씨슬', '밀크씨술': '밀크씨슬', '코큐텐': '코엔자임q10', '코엔자임': '코엔자임q10', '엠에스엠': 'msm', '오메가': '오메가3', '알러지약': '알레르기약', '샐레늄': '셀레늄', '히노마린': '하노마린' };
+
+function intentOf(norm) {
+  for (const [name, words] of INTENTS) if (words.some(w => norm.includes(w))) return name;
+  return '일반';
+}
+const INTENT_WORDS = INTENTS.flatMap(([, ws]) => ws);
+const FILLER_RE = /(먹어도|먹으면|먹고|되나요|될까요|되는지|되나|인가요|할까요|있나요|나요|해도|하면|좋을까요|어떤게|괜찮)/;
+const UNIT_RE = /^\d+(\.\d+)?(mg|g|kg|ml|iu|정|알|주|개월|일|미리|세|대)?$/;
+// 검색어 → 대상 후보 단어들. 조사는 '떼어 낸 꼴이 다른 곳에 실제로 있는 단어일 때만' 뗀다
+// (무조건 떼면 마운자로→마운자, 고양이→고양 처럼 이름이 잘린다). 의도어가 붙은 단어는 의도어만 떼고 남긴다(오메가3같이→오메가3).
+function applyAliases(t) {
+  for (const [from, to] of Object.entries(ENTITY_ALIAS)) {
+    // '오메가'→'오메가3' 처럼 바뀐 꼴이 원래 꼴로 시작하면, 이미 바뀐 꼴인 자리는 건너뛴다(오메가3 → 오메가33 방지)
+    if (to.startsWith(from)) { t = t.split(to).join('@@ALIAS@@').split(from).join(to).split('@@ALIAS@@').join(to); }
+    else t = t.split(from).join(to);
+  }
+  return t;
+}
+function rawTokens(keyword) {
+  return applyAliases(' ' + keyword.toLowerCase().replace(/[^가-힣a-z0-9\s.]/g, ' ') + ' ').split(/\s+/).filter(Boolean);
+}
+function entityTokens(keyword, vocab, known) {
+  const out = [];
+  for (let w of rawTokens(keyword)) {
+    for (const iw of INTENT_WORDS) if (w.includes(iw)) w = w.split(iw).join(' ').trim().split(/\s+/)[0] || '';
+    w = w.replace(FILLER_RE, ' ').trim().split(/\s+/)[0] || '';
+    if (vocab && !(known && known.has(w))) { const m = w.match(/^(.{2,})(이랑|으로|은|는|이|가|을|를|의|에|과|와|도|랑|로)$/); if (m && vocab.has(m[1])) w = m[1]; }
+    if (w.length < 2 || GENERIC_WORDS.has(w) || PARTICLES.includes(w) || UNIT_RE.test(w)) continue;
+    out.push(w);
+  }
+  return out;
+}
+
+let _knownEntities = null;   // 딥다이브 뿌리·제품 사전(있으면) — 붙여 쓴 검색어에서 대상을 찾는 데 쓴다
+async function loadKnownEntities() {
+  if (_knownEntities) return _knownEntities;
+  const out = new Set();
+  const base = 'https://raw.githubusercontent.com/justpassthrough/keyword-deep-dive/main/data/';
+  try { const r = await fetch(base + 'root_keywords.json'); if (r.ok) for (const x of (await r.json()).roots || []) out.add(String(x.keyword).toLowerCase()); } catch {}
+  try { const r = await fetch(base + 'known_products.json'); if (r.ok) for (const x of (await r.json()).products || []) out.add(String(x.name || x).toLowerCase()); } catch {}
+  return (_knownEntities = out);
+}
+
 async function groupKeywords(allKeywordsByDate) {
-  // Collect all unique keywords with their best ratio
-  const kwMap = {}; // normalized -> { original, bestRatio, dates: {date: ratio} }
+  const kwMap = {}; // normalized -> { original, dates: {date: ratio} }
   for (const [date, keywords] of Object.entries(allKeywordsByDate)) {
     for (const kw of keywords) {
       const norm = normalize(kw.keyword);
@@ -591,88 +654,47 @@ async function groupKeywords(allKeywordsByDate) {
     }
   }
 
-  const norms = Object.keys(kwMap);
-  const parent = {};
-  norms.forEach(n => parent[n] = n);
-  function find(x) { return parent[x] === x ? x : (parent[x] = find(parent[x])); }
-  function union(a, b) { parent[find(a)] = find(b); }
+  // 1) 대상 후보: 띄어 쓴 검색어의 '의도어·일반어가 아닌 단어' 중 2번 이상 나온 것 + 알려진 뿌리·제품
+  const known = await loadKnownEntities();
+  const vocab = new Set(known);   // 조사 떼기 판단용: 검색어에 그대로 나온 단어들
+  for (const info of Object.values(kwMap)) for (const t of rawTokens(info.original)) vocab.add(t);
+  const tokenCount = {};
+  for (const info of Object.values(kwMap)) for (const t of new Set(entityTokens(info.original, vocab, known))) tokenCount[t] = (tokenCount[t] || 0) + 1;
+  const entities = new Set([...known, ...Object.keys(tokenCount).filter(t => tokenCount[t] >= 2)]);
+  const entityList = [...entities].filter(e => e.length >= 2).sort((a, b) => b.length - a.length);   // 긴 것 우선
 
-  // 임베딩 기반 그룹핑 시도
-  const normToOriginal = {};
-  for (const n of norms) normToOriginal[n] = kwMap[n].original;
-  const embeddings = await getEmbeddings(normToOriginal);
-
-  const threshold = getSimilarityThreshold();
-
-  if (embeddings && Object.keys(embeddings).length > 0) {
-    // 임베딩 기반: 코사인 유사도 + 편집거리(오타 보정)
-    for (let i = 0; i < norms.length; i++) {
-      for (let j = i + 1; j < norms.length; j++) {
-        const a = norms[i], b = norms[j];
-        // 편집거리 ≤ 2 → 오타 보정
-        if (levenshtein(a, b) <= 2) { union(a, b); continue; }
-        // 코사인 유사도 ≥ threshold → 의미 유사
-        if (embeddings[a] && embeddings[b]) {
-          if (cosineSim(embeddings[a], embeddings[b]) >= threshold) {
-            union(a, b);
-          }
-        }
-      }
-    }
-  } else {
-    // Fallback: 기존 포함관계 + 편집거리 (OpenAI 키 없을 때)
-    for (let i = 0; i < norms.length; i++) {
-      for (let j = i + 1; j < norms.length; j++) {
-        const a = norms[i], b = norms[j];
-        const shorter = a.length <= b.length ? a : b;
-        const longer = a.length > b.length ? a : b;
-        if (shorter.length >= 4 && longer.length - shorter.length <= 5 && longer.includes(shorter)) { union(a, b); continue; }
-        if (levenshtein(a, b) <= 2) union(a, b);
-      }
-    }
-  }
-
-  // Build groups
+  // 2) 검색어마다 대상·의도를 정한다. 붙여 쓴 검색어는 대상 목록을 부분 문자열로 찾는다.
   const groups = {};
-  for (const norm of norms) {
-    const root = find(norm);
-    if (!groups[root]) groups[root] = { members: [] };
-    groups[root].members.push(norm);
+  for (const [norm, info] of Object.entries(kwMap)) {
+    const toks = entityTokens(info.original, vocab, known);
+    // 알려진 뿌리·제품이 있으면 그것, 없으면 가장 자주 나온 단어('천연 쏘팔메토'의 대상은 쏘팔메토)
+    let entity = toks.find(t => known.has(t)) || toks.filter(t => entities.has(t)).sort((a, b) => (tokenCount[b] || 0) - (tokenCount[a] || 0))[0];
+    if (!entity) { const an = aliasNorm(info.original); entity = entityList.find(e => an.includes(e.replace(/\s+/g, ''))); }
+    if (!entity) entity = toks[0] || norm;
+    // 오타 보정: 3자 이상이고 편집거리 1 이내인 기존 대상에 붙인다
+    if (!entities.has(entity) && entity.length >= 3) { const near = entityList.find(e => Math.abs(e.length - entity.length) <= 1 && levenshtein(e, entity) <= 1); if (near) entity = near; }
+    const intent = intentOf(norm);
+    const key = entity + '|' + intent;
+    if (!groups[key]) groups[key] = { entity, intent, members: [] };
+    groups[key].members.push(norm);
   }
 
-  // For each group, pick representative (가장 자주 등장 → 총 비율 합 높은 키워드)
   const result = [];
   for (const group of Object.values(groups)) {
-    let repNorm = group.members[0];
-    let repDateCount = 0;
-    let repTotalRatio = 0;
+    let repNorm = group.members[0], repDateCount = 0, repTotalRatio = 0;
     const mergedDates = {};
     const variants = new Set();
-
     for (const norm of group.members) {
       const info = kwMap[norm];
       const dateCount = Object.keys(info.dates).length;
       const totalRatio = Object.values(info.dates).reduce((s, r) => s + r, 0);
-      if (dateCount > repDateCount || (dateCount === repDateCount && totalRatio > repTotalRatio)) {
-        repDateCount = dateCount;
-        repTotalRatio = totalRatio;
-        repNorm = norm;
-      }
-      for (const [d, r] of Object.entries(info.dates)) {
-        mergedDates[d] = (mergedDates[d] || 0) + r;
-      }
+      if (dateCount > repDateCount || (dateCount === repDateCount && totalRatio > repTotalRatio)) { repDateCount = dateCount; repTotalRatio = totalRatio; repNorm = norm; }
+      for (const [d, r] of Object.entries(info.dates)) mergedDates[d] = (mergedDates[d] || 0) + r;
       variants.add(info.original);
     }
-
     const rep = kwMap[repNorm].original;
     variants.delete(rep);
-
-    result.push({
-      representative: rep,
-      variants: [...variants],
-      dateRatios: mergedDates,
-      bestRatio: Math.max(...Object.values(mergedDates))
-    });
+    result.push({ representative: rep, entity: group.entity, intent: group.intent, variants: [...variants], dateRatios: mergedDates, bestRatio: Math.max(...Object.values(mergedDates)) });
   }
   return result;
 }
@@ -752,6 +774,34 @@ function getVocab(posts) {
   return _vocab;
 }
 
+// 주제(대상+의도)를 내 글에 맞춘다(2026-09-17). 예전 방식은 '추천·고르는법·영양제' 같은 일반어만 겹쳐도
+// 부분 커버로 판정해 '밀크씨슬 고르는법 → 관절 영양제 글' 같은 엉뚱한 연결이 나왔다. 지금은 대상 이름이 기준:
+//  - 제목에 대상이 있고 그 의도(부작용·병용…)도 제목·본문 키워드에 있으면 covered
+//  - 제목에 대상만 있거나, 본문 키워드에만 대상이 있으면 partial(전용 글은 아님)
+//  - 어디에도 없으면 gap
+function aliasNorm(text) {
+  return applyAliases(String(text || '').toLowerCase().replace(/\s+/g, ''));
+}
+function matchTopicToPosts(group, posts) {
+  if (manualMappings[group.representative]) return matchKeywordToPosts(group.representative, posts);
+  if (!posts || !posts.posts || posts.posts.length === 0) return { status: 'no_data', post: null };
+  const entity = aliasNorm(group.entity);
+  if (!entity || entity.length < 2) return { status: 'gap', post: null };
+  const intentWords = (INTENTS.find(([name]) => name === group.intent) || [null, []])[1];
+  let best = { status: 'gap', post: null, rank: 0, date: '' };
+  for (const post of posts.posts) {
+    const title = aliasNorm(post.title);
+    const body = aliasNorm((post.body_keywords || []).join(' ') + ' ' + (post.summary || ''));
+    const inTitle = title.includes(entity), inBody = body.includes(entity);
+    if (!inTitle && !inBody) continue;
+    const intentInTitle = group.intent !== '일반' && intentWords.some(w => title.includes(w));
+    const intentHit = group.intent === '일반' || intentInTitle || intentWords.some(w => body.includes(w));
+    const rank = inTitle && intentInTitle ? 4 : inTitle && intentHit ? 3 : inTitle ? 2 : 1;
+    if (rank > best.rank || (rank === best.rank && (post.date || '') > best.date)) best = { status: rank >= 3 ? 'covered' : 'partial', post: post.title, rank, date: post.date || '' };
+  }
+  return best;
+}
+
 function matchKeywordToPosts(keyword, posts) {
   // 수동 매핑 우선
   if (manualMappings[keyword]) {
@@ -815,7 +865,7 @@ async function analyze() {
   const latestDate = Object.keys(inflowHistory).sort().pop();
   for (const g of groups) {
     const { days, avgRatio, sinceLast, tier } = calcRecent(g.dateRatios, latestDate);
-    const match = matchKeywordToPosts(g.representative, myPosts);
+    const match = matchTopicToPosts(g, myPosts);
     const gapMult = match.status === 'gap' ? 3 : match.status === 'partial' ? 1.5 : 0.3;
     const score = days * avgRatio * gapMult;
 
@@ -932,6 +982,7 @@ function renderPastSection(items) {
 function renderCard(item) {
   let h = '<div class="kw-card"><div class="kw-header">';
   h += '<span class="kw-name">' + escHtml(item.representative) + '</span>';
+  if (item.entity) h += '<span class="kw-score" style="margin-left:8px;background:#eef3ff;color:#3457b2;">' + escHtml(item.entity) + (item.intent && item.intent !== '일반' ? ' · ' + escHtml(item.intent) : '') + '</span>';
   h += '<span class="kw-score">점수: ' + item.score.toFixed(1) + '</span>';
   h += '</div>';
   h += '<div class="kw-detail">📊 ' + (item.days > 0 ? '최근 ' + RECENT_WINDOW_DAYS + '일 중 ' + item.days + '일' : '과거 ' + Object.keys(item.dateRatios).length + '일') + ' | 평균 ' + item.avgRatio.toFixed(2) + '%';
