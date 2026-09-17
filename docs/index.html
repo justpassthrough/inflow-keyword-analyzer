@@ -677,23 +677,27 @@ async function groupKeywords(allKeywordsByDate) {
   return result;
 }
 
-// ===== CONSECUTIVE DAYS =====
-function calcConsecutive(dateRatios) {
-  const dates = Object.keys(dateRatios).sort().reverse();
-  if (dates.length === 0) return { consecutive: 0, avgRatio: 0 };
+// ===== RECENT ACTIVITY =====
+// 등급은 "연속 일수"가 아니라 최근 28일 중 등장한 날 수로 매긴다(2026-09-17).
+// 일간 데이터에서는 롱테일 검색어가 하루 걸러 들어와 연속이 끊기므로, 연속 기준으로는 최근 검색어가 거의 다 빠진다.
+// 기준일은 오늘이 아니라 데이터의 마지막 날. 시급·검토는 최근 14일 안에 본 것만(아니면 한 단계 내림).
+const RECENT_WINDOW_DAYS = 28;
+const FRESH_DAYS = 14;
+const TIER_URGENT_DAYS = 6;    // 주 1.5회꼴로 4주 내내 = 꾸준한 수요
+const TIER_CONSIDER_DAYS = 3;  // 우연(1~2회)을 넘는 반복
+const TIER_MONITOR_DAYS = 2;
+const DAY_MS = 1000 * 60 * 60 * 24;
 
-  let consecutive = 1;
-  for (let i = 1; i < dates.length; i++) {
-    const prev = new Date(dates[i - 1]);
-    const curr = new Date(dates[i]);
-    const diff = (prev - curr) / (1000 * 60 * 60 * 24);
-    if (diff === 1) consecutive++;
-    else break;
-  }
-
-  const recentDates = dates.slice(0, consecutive);
-  const avgRatio = recentDates.reduce((s, d) => s + dateRatios[d], 0) / recentDates.length;
-  return { consecutive, avgRatio };
+function calcRecent(dateRatios, latestDate) {
+  const end = new Date(latestDate);
+  const inWindow = Object.keys(dateRatios).filter(d => { const ago = Math.round((end - new Date(d)) / DAY_MS); return ago >= 0 && ago < RECENT_WINDOW_DAYS; }).sort();
+  const days = inWindow.length;
+  if (days === 0) { const all = Object.values(dateRatios); return { days: 0, avgRatio: all.length ? all.reduce((s, r) => s + r, 0) / all.length : 0, sinceLast: null, tier: 'past' }; }
+  const avgRatio = inWindow.reduce((s, d) => s + dateRatios[d], 0) / days;
+  const sinceLast = Math.round((end - new Date(inWindow[days - 1])) / DAY_MS);
+  let tier = days >= TIER_URGENT_DAYS ? 'urgent' : days >= TIER_CONSIDER_DAYS ? 'consider' : days >= TIER_MONITOR_DAYS ? 'monitor' : 'single';
+  if (sinceLast >= FRESH_DAYS) tier = tier === 'urgent' ? 'consider' : tier === 'consider' ? 'monitor' : tier;
+  return { days, avgRatio, sinceLast, tier };
 }
 
 // ===== POST MATCHING =====
@@ -808,15 +812,18 @@ async function analyze() {
   const groups = await groupKeywords(inflowHistory);
   const analyzed = [];
 
+  const latestDate = Object.keys(inflowHistory).sort().pop();
   for (const g of groups) {
-    const { consecutive, avgRatio } = calcConsecutive(g.dateRatios);
+    const { days, avgRatio, sinceLast, tier } = calcRecent(g.dateRatios, latestDate);
     const match = matchKeywordToPosts(g.representative, myPosts);
     const gapMult = match.status === 'gap' ? 3 : match.status === 'partial' ? 1.5 : 0.3;
-    const score = consecutive * avgRatio * gapMult;
+    const score = days * avgRatio * gapMult;
 
     analyzed.push({
       ...g,
-      consecutive,
+      days,
+      sinceLast,
+      tier,
       avgRatio,
       matchStatus: match.status,
       matchPost: match.post,
@@ -853,24 +860,13 @@ async function renderAll() {
   }
 
   const analyzed = await analyze();
-  // 정렬: 연속 구간의 마지막 날짜(최근) → 연속일수 내림차순
-  function sortByRecencyThenConsecutive(items) {
-    return items.sort((a, b) => {
-      // 연속 구간의 시작(=가장 최근) 날짜로 비교
-      const aDates = Object.keys(a.dateRatios).sort().reverse();
-      const bDates = Object.keys(b.dateRatios).sort().reverse();
-      // 연속 구간: 최신 날짜부터 연속인 마지막 날짜까지
-      const aRecent = aDates[0] || '';
-      const bRecent = bDates[0] || '';
-      // 연속 구간의 첫 날(가장 최근 등장일)로 비교
-      if (aRecent !== bRecent) return bRecent.localeCompare(aRecent);
-      return b.consecutive - a.consecutive;
-    });
-  }
-
-  const urgent = sortByRecencyThenConsecutive(analyzed.filter(a => a.consecutive >= 5 && a.matchStatus !== 'covered'));
-  const consider = sortByRecencyThenConsecutive(analyzed.filter(a => a.consecutive >= 3 && a.consecutive < 5 && a.matchStatus !== 'covered'));
-  const monitor = sortByRecencyThenConsecutive(analyzed.filter(a => a.consecutive === 2 && a.matchStatus !== 'covered'));
+  // 정렬: 등장한 날 수 → 최근에 본 순
+  const byDaysThenRecency = (a, b) => (b.days - a.days) || (a.sinceLast - b.sinceLast) || (b.score - a.score);
+  const open = analyzed.filter(a => a.matchStatus !== 'covered');
+  const urgent = open.filter(a => a.tier === 'urgent').sort(byDaysThenRecency);
+  const consider = open.filter(a => a.tier === 'consider').sort(byDaysThenRecency);
+  const monitor = open.filter(a => a.tier === 'monitor').sort(byDaysThenRecency);
+  const past = open.filter(a => a.tier === 'past' && Object.keys(a.dateRatios).length >= 2).sort((a, b) => Object.keys(b.dateRatios).length - Object.keys(a.dateRatios).length);
   const covered = analyzed.filter(a => a.matchStatus === 'covered');
   const gap = analyzed.filter(a => a.matchStatus === 'gap' || a.matchStatus === 'partial' || a.matchStatus === 'no_data');
 
@@ -884,11 +880,12 @@ async function renderAll() {
 
   // Results
   let html = '';
-  if (urgent.length > 0) html += renderSection('🔴 즉시 작성 (5일+ 연속, 전용 글 없음)', 'urgent', urgent);
-  if (consider.length > 0) html += renderSection('🟠 작성 고려 (3~4일 연속)', 'consider', consider);
-  if (monitor.length > 0) html += renderSection('🟡 모니터링 (2일 등장)', 'monitor', monitor);
+  if (urgent.length > 0) html += renderSection('🔴 즉시 작성 (최근 ' + RECENT_WINDOW_DAYS + '일 중 ' + TIER_URGENT_DAYS + '일+ 등장, 전용 글 없음)', 'urgent', urgent);
+  if (consider.length > 0) html += renderSection('🟠 작성 고려 (최근 ' + RECENT_WINDOW_DAYS + '일 중 ' + TIER_CONSIDER_DAYS + '~' + (TIER_URGENT_DAYS - 1) + '일 등장)', 'consider', consider);
+  if (monitor.length > 0) html += renderSection('🟡 모니터링 (최근 ' + RECENT_WINDOW_DAYS + '일 중 ' + TIER_MONITOR_DAYS + '일 등장, 또는 더 많지만 최근 ' + FRESH_DAYS + '일엔 없음)', 'monitor', monitor);
   if (covered.length > 0) html += renderCoveredSection(covered);
-  if (html === '') html = '<div class="status-msg">분석 결과: 1일만 등장한 키워드는 노이즈로 제외됩니다. 더 많은 날짜 데이터를 업로드하세요.</div>';
+  if (past.length > 0) html += renderPastSection(past);
+  if (html === '') html = '<div class="status-msg">분석 결과: 최근 ' + RECENT_WINDOW_DAYS + '일 안에 2일 이상 등장한 검색어가 없습니다(1일만 등장한 검색어는 노이즈로 제외).</div>';
 
   document.getElementById('results').innerHTML = html;
 
@@ -923,12 +920,21 @@ function renderCoveredSection(items) {
   return h;
 }
 
+function renderPastSection(items) {
+  let h = '<div class="section">';
+  h += '<div class="section-title covered collapsible" onclick="toggleCollapse(this)">🗂 과거 기록 — 최근 ' + RECENT_WINDOW_DAYS + '일 안에는 없음 (' + items.length + '개)</div>';
+  h += '<div class="collapse-body">';
+  for (const item of items) h += renderCard(item);
+  h += '</div></div>';
+  return h;
+}
+
 function renderCard(item) {
   let h = '<div class="kw-card"><div class="kw-header">';
   h += '<span class="kw-name">' + escHtml(item.representative) + '</span>';
   h += '<span class="kw-score">점수: ' + item.score.toFixed(1) + '</span>';
   h += '</div>';
-  h += '<div class="kw-detail">📊 ' + item.consecutive + '일 연속 | 평균 ' + item.avgRatio.toFixed(2) + '%';
+  h += '<div class="kw-detail">📊 ' + (item.days > 0 ? '최근 ' + RECENT_WINDOW_DAYS + '일 중 ' + item.days + '일' : '과거 ' + Object.keys(item.dateRatios).length + '일') + ' | 평균 ' + item.avgRatio.toFixed(2) + '%';
   if (item.matchStatus === 'covered') {
     h += ' | 📝 커버 글: ' + escHtml(item.matchPost || '');
     if (item.manualMatch) h += ' (수동)';
@@ -944,7 +950,7 @@ function renderCard(item) {
     const today = new Date().toISOString().slice(0, 10);
     const daysAgo = Math.round((new Date(today) - new Date(latest)) / (1000 * 60 * 60 * 24));
     const freshLabel = daysAgo === 0 ? '오늘' : daysAgo === 1 ? '어제' : daysAgo + '일 전';
-    h += '<div class="kw-dates">📅 ' + appearedDates.map(d => {
+    h += '<div class="kw-dates">📅 ' + (appearedDates.length > 14 ? '… ' : '') + appearedDates.slice(-14).map(d => {
       const short = d.slice(5);
       const r = item.dateRatios[d];
       return '<span class="date-chip" title="' + d + ' (' + r.toFixed(1) + '%)">' + short + '</span>';
